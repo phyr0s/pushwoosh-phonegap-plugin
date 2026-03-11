@@ -196,8 +196,24 @@ API_AVAILABLE(ios(10))
 
     // Set delegate early so VoIP events work even before initializeVoIPParameters is called
     if (@available(iOS 14.0, *)) {
-        PushwooshVoIPImplementation.delegate = self;
-    }
+        PushwooshVoIPImplementation.delegate = self;
+ 
+        // Auto-initialize VoIP with stored parameters so PKPushRegistry + CXProvider
+        // are ready immediately on cold start (e.g. when iOS relaunches the app for a
+        // VoIP push). Without this, apps with heavy JS frameworks (Angular, etc.) take
+        // too long to call initializeVoIPParameters from JS, and iOS terminates the app
+        // because CXProvider.reportNewIncomingCall is not invoked in time.
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        if ([defaults objectForKey:@"PW_VOIP_SUPPORTS_VIDEO"] != nil) {
+            BOOL supportsVideo = [defaults boolForKey:@"PW_VOIP_SUPPORTS_VIDEO"];
+            NSString *ringtoneSound = [defaults stringForKey:@"PW_VOIP_RINGTONE_SOUND"] ?: @"";
+            NSInteger handleTypes = [defaults integerForKey:@"PW_VOIP_HANDLE_TYPES"];
+            NSLog(@"[PW] pluginInitialize: auto-initializing VoIP with stored params (supportsVideo=%d, ringtone=%@, handleTypes=%ld)", supportsVideo, ringtoneSound, (long)handleTypes);
+            [PushwooshVoIPImplementation initializeVoIP:supportsVideo
+                                           ringtoneSound:ringtoneSound
+                                              handleTypes:handleTypes];
+        }
+    }
 
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(receiveCallFromRecents:) name:@"RecentsCallNotification" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
@@ -751,6 +767,13 @@ API_AVAILABLE(ios(10.0)) {
 
         BOOL supportsVideo = [supportsVideoNumber boolValue];
         NSInteger handleTypes = [handleTypesNumber integerValue];
+
+        // Persist VoIP parameters so pluginInitialize can auto-init on cold start
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setBool:supportsVideo forKey:@"PW_VOIP_SUPPORTS_VIDEO"];
+        [defaults setObject:(ringtoneSound ?: @"") forKey:@"PW_VOIP_RINGTONE_SOUND"];
+        [defaults setInteger:handleTypes forKey:@"PW_VOIP_HANDLE_TYPES"];
+        [defaults synchronize];
 
         // Always pin delegate to the primary plugin instance so it survives
         // secondary WebView deallocation.

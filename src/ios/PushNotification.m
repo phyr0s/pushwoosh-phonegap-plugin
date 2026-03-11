@@ -173,7 +173,13 @@ API_AVAILABLE(ios(10))
 
         pw_PushNotificationPlugin = self;
     }
-
+NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+          NSString *storedAppCode = [defaults stringForKey:@"PW_STORED_APP_CODE"];
+         if (storedAppCode.length > 0) {
+              NSString *storedAppName = [defaults stringForKey:@"PW_STORED_APP_NAME"] ?: @"";
+              NSLog(@"[PW] pluginInitialize: auto-initializing SDK with stored appCode=%@", storedAppCode);
+              [PushNotificationManager initializeWithAppCode:storedAppCode appName:storedAppName];
+          }
 #if PW_VOIP_ENABLED
     callbackIds = [[NSMutableDictionary alloc] initWithCapacity:5];
     [callbackIds setObject:[NSMutableArray array] forKey:@"initializeVoIPParameters"];
@@ -278,6 +284,11 @@ API_AVAILABLE(ios(10))
         }
     }
     else {
+        // Persist app code so pluginInitialize can auto-init SDK on cold start
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+              [defaults setObject:appid forKey:@"PW_STORED_APP_CODE"];
+             [defaults setObject:(appname ?: @"") forKey:@"PW_STORED_APP_NAME"];
+              [defaults synchronize];
         [PushNotificationManager initializeWithAppCode:appid appName:appname];
     }
     

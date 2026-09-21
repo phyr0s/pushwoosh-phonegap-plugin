@@ -220,7 +220,37 @@
  * @module pushwoosh-cordova-plugin
  */
 
-var exec = window.cordova.exec;
+/**
+ * Forwards a plugin call to `cordova.exec`, looking the bridge up on every call.
+ *
+ * The plugin is also published as a plain npm package with a `main` entry, so a bundler, an SSR
+ * pass or a test runner can evaluate this module with no cordova in scope. Reading
+ * `window.cordova.exec` while the module was being evaluated threw there and took the host's
+ * whole bootstrap down with it. With no bridge available the call is now a logged no-op that
+ * still reports the failure to the caller's fail callback, and on the cordova path the bridge is
+ * resolved exactly as before.
+ *
+ * @private
+ */
+function exec() {
+	var cordovaRef = typeof window !== 'undefined' ? window.cordova : undefined;
+
+	if (!cordovaRef || typeof cordovaRef.exec !== 'function') {
+		var message = 'Pushwoosh: cordova.exec is not available, is cordova.js loaded? Ignored call: ' + arguments[3];
+		var fail = arguments[1];
+
+		console.warn(message);
+
+		// Deferred, because cordova.exec never calls back within the caller's own frame.
+		if (typeof fail === 'function') {
+			setTimeout(function () { fail(message); }, 0);
+		}
+
+		return;
+	}
+
+	return cordovaRef.exec.apply(cordovaRef, arguments);
+}
 
 /**
  * PushNotification class provides the JavaScript API for interacting with the Pushwoosh SDK.
@@ -714,6 +744,12 @@ PushNotification.prototype.notificationCallback = function(notification) {
  *
  * @param {Function} success - Callback function to be invoked when the event occurs.
  * @param {Function} fail - Callback function to be invoked if the registration fails.
+ *
+ * @remarks iOS: if you present the call UI in a secondary native WebView on top of the main
+ * WebView, the main WebView is backgrounded and these callbacks are suspended. The plugin also
+ * broadcasts every VoIP event via the `PushwooshVoIPEventDispatched` NSNotification so your native
+ * view controller can inject the event into that WebView. See the README section
+ * "Forwarding VoIP events to a secondary WebView (iOS)".
  */
 PushNotification.prototype.registerEvent = function(eventName, success, fail) {
 	exec(success, fail, "PushNotification", "registerEvent", [eventName]);

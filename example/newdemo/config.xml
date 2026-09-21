@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<widget id="com.pushwoosh.newdemo" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+<widget id="com.example.PushwooshSampleApp" android-packageName="com.example.sampleapp" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
     <name>newdemo</name>
     <description>Sample Apache Cordova App</description>
     <author email="dev@cordova.apache.org" href="https://cordova.apache.org">
@@ -9,11 +9,14 @@
     <allow-intent href="http://*/*" />
     <allow-intent href="https://*/*" />
 
-    <!-- Local Pushwoosh Cordova Plugin -->
-    <plugin name="pushwoosh-cordova-plugin" spec="../../">
-        <variable name="LOG_LEVEL" value="DEBUG" />
-        <variable name="IOS_FOREGROUND_ALERT_TYPE" value="NONE" />
-        <variable name="ANDROID_FOREGROUND_PUSH" value="false" />
-    </plugin>
-</widget>
+    <platform name="ios">
+        <preference name="deployment-target" value="13.0" />
+    </platform>
 
+    <platform name="android">
+        <resource-file src="google-services.json" target="app/google-services.json" />
+        <hook type="after_prepare" src="hooks/hms-android.js" />
+    </platform>
+
+    <hook type="after_platform_add" src="hooks/install-plugin.js" />
+</widget>

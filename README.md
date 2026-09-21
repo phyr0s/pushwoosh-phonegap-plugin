@@ -25,6 +25,7 @@
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
 - [Plugin Preferences](#plugin-preferences)
+- [Huawei (HMS) Setup](#huawei-hms-setup)
 - [Support](#support)
 - [License](#license)
 
@@ -51,13 +52,13 @@
 Using npm:
 
 ```bash
-cordova plugin add pushwoosh-cordova-plugin@8.3.69
+cordova plugin add pushwoosh-cordova-plugin@8.3.74
 ```
 
 Using git:
 
 ```bash
-cordova plugin add https://github.com/Pushwoosh/pushwoosh-phonegap-plugin.git#8.3.69
+cordova plugin add https://github.com/Pushwoosh/pushwoosh-phonegap-plugin.git#8.3.74
 ```
 
 ## AI-Assisted Integration
@@ -150,33 +151,39 @@ document.addEventListener('deviceready', function() {
 ### User ID and Events
 
 ```javascript
-var pushwoosh = cordova.require("pushwoosh-cordova-plugin.PushNotification");
+// Plugin modules are registered after cordova.js loads, so cordova.require()
+// must be called from deviceready onwards, never at top level.
+document.addEventListener('deviceready', function() {
+    var pushwoosh = cordova.require("pushwoosh-cordova-plugin.PushNotification");
 
-pushwoosh.setUserId("user_123");
+    pushwoosh.setUserId("user_123");
 
-pushwoosh.postEvent("purchase", {
-    product: "Premium Plan",
-    price: "9.99"
-});
+    pushwoosh.postEvent("purchase", {
+        product: "Premium Plan",
+        price: "9.99"
+    });
+}, false);
 ```
 
 ### Tags
 
 ```javascript
-var pushwoosh = cordova.require("pushwoosh-cordova-plugin.PushNotification");
+document.addEventListener('deviceready', function() {
+    var pushwoosh = cordova.require("pushwoosh-cordova-plugin.PushNotification");
 
-// Set tags
-pushwoosh.setTags(
-    { age: 25, name: "John", favorite_categories: ["sports", "news"] },
-    function() { console.log("Tags set successfully"); },
-    function(error) { console.error("Failed to set tags: " + error); }
-);
+    // Set tags
+    pushwoosh.setTags(
+        { age: 25, name: "John", favorite_categories: ["sports", "news"] },
+        function() { console.log("Tags set successfully"); },
+        function(error) { console.error("Failed to set tags: " + error); }
+    );
 
-// Get tags
-pushwoosh.getTags(
-    function(tags) { console.log("Tags: " + JSON.stringify(tags)); },
-    function(error) { console.error("Failed to get tags: " + error); }
-);
+    // Get tags
+    pushwoosh.getTags(
+        function(tags) { console.log("Tags: " + JSON.stringify(tags)); },
+        function(error) { console.error("Failed to get tags: " + error); }
+    );
+}, false);
 ```
 
 ## API Reference
@@ -275,6 +282,56 @@ Configure these in your `config.xml`:
 | `PW_VOIP_IOS_ENABLED` | `false` | Enable VoIP calling features on iOS |
 | `PW_VOIP_ANDROID_ENABLED` | `false` | Enable VoIP calling features on Android |
 
+## Huawei (HMS) Setup
+
+The plugin ships the Pushwoosh Huawei transport (`com.pushwoosh:pushwoosh-huawei`), but its POM
+does not pull HMS Push Kit in. To deliver pushes on Huawei devices without Google services, add
+the Huawei build wiring to your app.
+
+**1. Huawei Maven repository** — in `platforms/android/app/repositories.gradle`:
+
+```groovy
+ext.repos = {
+    google()
+    mavenCentral()
+    maven { url 'https://developer.huawei.com/repo/' }
+}
+```
+
+**2. AGConnect Gradle plugin** — in the `buildscript { dependencies { … } }` block of
+`platforms/android/app/build.gradle`, next to the Android Gradle plugin classpath:
+
+```groovy
+classpath "com.huawei.agconnect:agcp:1.9.1.301"
+```
+
+**3. Push Kit dependency and the AGConnect plugin** — in
+`platforms/android/app/build-extras.gradle`:
+
+```groovy
+apply plugin: 'com.huawei.agconnect'
+
+dependencies {
+    implementation 'com.huawei.hms:push:6.13.0.300'
+}
+```
+
+**4. `agconnect-services.json`** — download it from AppGallery Connect and put it into
+`platforms/android/app/`, next to `google-services.json`.
+
+**5. Signing certificate fingerprint** — register the SHA-256 fingerprint of the certificate you
+sign the app with in AppGallery Connect (Project settings → General information → SHA-256
+certificate fingerprint). Without it the device fails registration with
+`6003: certificate fingerprint error`.
+
+No JavaScript changes are needed: the native SDK detects the transport automatically on HMS
+devices once Push Kit is on the classpath. A correctly wired app logs
+`PUSH TRANSPORT SET/CHANGED: Huawei (device type 17)` on a Huawei device.
+
+Since Cordova regenerates `platforms/android/`, wire these edits through an `after_prepare` hook
+rather than by hand — see `example/newdemo/hooks/hms-android.js` in this repository for a working
+one.
+
 ## VoIP in Capacitor
 
 This plugin works in Capacitor apps. Capacitor does not execute Cordova hooks, so VoIP dependencies must be added manually to your native projects.
@@ -298,6 +355,42 @@ PW_VOIP_ANDROID_ENABLED=true
 ```
 
 These changes persist across `cap sync` since Capacitor does not regenerate native projects.
+
+## Forwarding VoIP events to a secondary WebView (iOS)
+
+VoIP events (`answer`, `hangup`, `reject`, `voipPushPayload`, etc.) are delivered to the JavaScript callbacks you register with `registerEvent`. If your app presents the call UI in a **secondary native WebView / view controller** on top of the main Cordova (or Capacitor) WebView, the main WebView is backgrounded and its JavaScript engine is suspended, so those callbacks do not run and the event is missed.
+
+To cover this, the plugin also broadcasts every VoIP event through `NSNotificationCenter`, independent of WebView state. Observe it in the view controller that owns your secondary WebView and inject the event into that WebView yourself.
+
+**Notification**
+
+- Name: `PushwooshVoIPEventDispatched`
+- `userInfo`:
+  - `eventName` (`NSString`) — the event name, same values as `registerEvent` (`"answer"`, `"hangup"`, `"reject"`, `"voipPushPayload"`, ...)
+  - `payload` (`NSDictionary`) — the event payload, identical to the data delivered to JavaScript
+
+**Example (Swift)**
+
+```swift
+NotificationCenter.default.addObserver(
+    forName: Notification.Name("PushwooshVoIPEventDispatched"),
+    object: nil, queue: .main
+) { [weak webView] note in
+    guard
+        let webView = webView,
+        let name = note.userInfo?["eventName"] as? String,
+        let payload = note.userInfo?["payload"] as? [String: Any],
+        let data = try? JSONSerialization.data(withJSONObject: payload),
+        let json = String(data: data, encoding: .utf8)
+    else { return }
+
+    // `window.__pushwooshDispatch` is your own glue inside the secondary WebView's page,
+    // routing the event to your call UI.
+    webView.evaluateJavaScript("window.__pushwooshDispatch('\(name)', \(json))")
+}
+```
+
+The notification fires for every VoIP event and is a no-op when no observer is registered, so it is safe to leave enabled.
 
 ## Support
 

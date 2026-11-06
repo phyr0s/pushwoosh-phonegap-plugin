@@ -18,10 +18,12 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.core.app.NotificationManagerCompat;
 import android.webkit.JavascriptInterface;
 
 import com.pushwoosh.Pushwoosh;
+import com.pushwoosh.PushwooshPlatform;
 import com.pushwoosh.RegisterForPushNotificationsResultData;
 import com.pushwoosh.badge.PushwooshBadge;
 import com.pushwoosh.exception.GetTagsException;
@@ -82,7 +84,8 @@ public class PushNotifications extends CordovaPlugin {
 	private static CordovaInterface cordovaInterface;
 	private static CallsAdapter callsAdapter;
 
-	private static HashMap<String, ArrayList<CallbackContext>> callbackContextMap = new HashMap<String, ArrayList<CallbackContext>>();
+	private static final VoipEventRegistry sVoipEventRegistry = new VoipEventRegistry(
+			new PersistedVoipEventStore(), PushNotifications::deliverVoipEvent, PushNotifications::voipNotReadyReason);
 
 	private final HashMap<String, CallbackContext> callbackIds = new HashMap<String, CallbackContext>();
 
@@ -116,26 +119,23 @@ public class PushNotifications extends CordovaPlugin {
 	 * Returns false if CordovaInterface is null, Activity is null/finishing/destroyed.
 	 */
 	private static boolean isCordovaReady() {
-		if (cordovaInterface == null) {
+		return hasUsableActivity(cordovaInterface);
+	}
+
+	private static boolean hasUsableActivity(@Nullable CordovaInterface cordova) {
+		if (cordova == null) {
 			return false;
 		}
 		try {
-			android.app.Activity activity = cordovaInterface.getActivity();
-			if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
-				return false;
-			}
-			return true;
+			android.app.Activity activity = cordova.getActivity();
+			return activity != null && !activity.isFinishing() && !activity.isDestroyed();
 		} catch (Exception e) {
 			return false;
 		}
 	}
 
-	public static HashMap<String, ArrayList<CallbackContext>> getCallbackContextMap() {
-		return callbackContextMap;
-	}
-
-	public static HashMap<String, ArrayList<CallbackContext>> getCallbackContexts() {
-		return callbackContextMap;
+	public static VoipEventRegistry getVoipEventRegistry() {
+		return sVoipEventRegistry;
 	}
 
 	private final Handler handler = new Handler(Looper.getMainLooper());
@@ -157,11 +157,14 @@ public class PushNotifications extends CordovaPlugin {
 				sAppReady.set(false);
 			}
 		}
-		// TODO: implement per-instance callback ownership tracking (ownCallbacks Set<CallbackContext>)
-		//  and clean up only this instance's callbacks from callbackContextMap here.
-		//  Without this, dead callbacks from destroyed secondary WebViews remain in the map
-		//  and cause harmless "Application attempted to call on a destroyed WebView" warnings.
+		sVoipEventRegistry.ownerDestroyed(this);
 		super.onDestroy();
+	}
+
+	@Override
+	public void onReset() {
+		sVoipEventRegistry.ownerDestroyed(this);
+		super.onReset();
 	}
 
 	@Override
@@ -177,13 +180,6 @@ public class PushNotifications extends CordovaPlugin {
 		if (callsAdapter == null) {
 			callsAdapter = CallsAdapterFactory.create(cordova.getActivity().getApplicationContext());
 		}
-
-		callbackContextMap.putIfAbsent("answer", new ArrayList<CallbackContext>());
-		callbackContextMap.putIfAbsent("reject", new ArrayList<CallbackContext>());
-		callbackContextMap.putIfAbsent("hangup", new ArrayList<CallbackContext>());
-		callbackContextMap.putIfAbsent("voipPushPayload", new ArrayList<CallbackContext>());
-		callbackContextMap.putIfAbsent("voipDidCancelCall", new ArrayList<CallbackContext>());
-		callbackContextMap.putIfAbsent("voipDidFailToCancelCall", new ArrayList<CallbackContext>());
 	}
 
 	private JSONObject getPushFromIntent(Intent intent) {
@@ -241,7 +237,7 @@ public class PushNotifications extends CordovaPlugin {
 		sAppReady.set(true);
 
 		try {
-			processPersistedVoIPEvents();
+			sVoipEventRegistry.flush();
 		} catch (Exception e) {
 			PWLog.error(TAG, "Failed to process persisted VoIP events", e);
 		}
@@ -627,6 +623,21 @@ public class PushNotifications extends CordovaPlugin {
 			result.put("enabled", enabled);
 			callbackContext.success(result);
 		} catch (Exception e) {
+			callbackContext.error(e.getMessage());
+		}
+		return true;
+	}
+
+	@CordovaMethod
+	private boolean isRegisteredForPushNotifications(JSONArray data, final CallbackContext callbackContext) {
+		try {
+			boolean registered = PushwooshPlatform.getInstance()
+					.getRegistrationPrefs()
+					.isRegisteredForPush()
+					.get();
+			callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, registered));
+		} catch (Exception e) {
+			// Reporting the failure, not "false": an uninitialized SDK is not an unsubscribed device.
 			callbackContext.error(e.getMessage());
 		}
 		return true;
@@ -1126,12 +1137,12 @@ public class PushNotifications extends CordovaPlugin {
 
 	@CordovaMethod
 	private boolean registerEvent(JSONArray data, final CallbackContext callbackContext) {
-		return callsAdapter.registerEvent(data, callbackContext);
+		return callsAdapter.registerEvent(data, callbackContext, this);
 	}
 
 	@CordovaMethod
 	private boolean unregisterEvent(JSONArray data, final CallbackContext callbackContext) {
-		return callsAdapter.unregisterEvent(data, callbackContext);
+		return callsAdapter.unregisterEvent(data, callbackContext, this);
 	}
 
 	@CordovaMethod
@@ -1187,32 +1198,72 @@ public class PushNotifications extends CordovaPlugin {
 		}
 	}
 
-	private void processPersistedVoIPEvents() {
-		PWLog.noise(TAG, "processPersistedVoIPEvents()");
-		Context context = AndroidPlatformModule.getApplicationContext();
-		if (context == null) {
-			return;
+	private static final class PersistedVoipEventStore implements VoipEventRegistry.Store {
+		@NonNull
+		@Override
+		public List<VoIPEventStorage.StoredEvent> load() {
+			Context context = AndroidPlatformModule.getApplicationContext();
+			if (context == null) {
+				return new ArrayList<>();
+			}
+
+			return VoIPEventStorage.loadEvents(context);
 		}
 
-		List<VoIPEventStorage.StoredEvent> storedEvents = VoIPEventStorage.loadEvents(context);
-		if (storedEvents.isEmpty()) {
-			return;
+		@Override
+		public void replace(@NonNull List<VoIPEventStorage.StoredEvent> remaining) {
+			Context context = AndroidPlatformModule.getApplicationContext();
+			if (context == null) {
+				return;
+			}
+
+			if (!VoIPEventStorage.replaceEvents(context, remaining)) {
+				PWLog.warn(TAG, "Failed to write back the VoIP event buffer, events may be lost or replayed twice");
+			}
 		}
-
-		PWLog.info(TAG, "Processing " + storedEvents.size() + " persisted VoIP events");
-
-		for (VoIPEventStorage.StoredEvent event : storedEvents) {
-			emitVoipEvent(event.type, event.payload);
-		}
-
-		VoIPEventStorage.clearEvents(context);
 	}
 
-	private static void bufferVoipEvent(@NonNull String type, @NonNull JSONObject payload) {
-		Context context = AndroidPlatformModule.getApplicationContext();
-		if (context != null) {
-			VoIPEventStorage.saveEvent(context, type, payload);
+	private static boolean deliverVoipEvent(@NonNull CallbackContext target, @NonNull Object owner, @NonNull JSONObject payload) {
+		if (!isOwnerAlive(owner)) {
+			PWLog.info(TAG, "Skipping VoIP event delivery: owner activity is gone");
+			return false;
 		}
+
+		try {
+			PluginResult result = new PluginResult(PluginResult.Status.OK, payload);
+			result.setKeepCallback(true);
+			target.sendPluginResult(result);
+			return true;
+		} catch (Exception e) {
+			PWLog.warn(TAG, "Failed to deliver VoIP event: " + e.getMessage());
+			return false;
+		}
+	}
+
+	/**
+	 * Tells whether the subscription owner still has a usable bridge of its own.
+	 *
+	 * An owner that is not a Cordova plugin carries no activity to check and is considered alive.
+	 */
+	private static boolean isOwnerAlive(@NonNull Object owner) {
+		if (!(owner instanceof CordovaPlugin)) {
+			return true;
+		}
+
+		return hasUsableActivity(((CordovaPlugin) owner).cordova);
+	}
+
+	@Nullable
+	private static String voipNotReadyReason() {
+		if (!isCordovaReady()) {
+			return "Cordova not ready";
+		}
+
+		if (!sAppReady.get()) {
+			return "JS not ready";
+		}
+
+		return null;
 	}
 
 	// Manifest meta-data key. When present, VoIP events are also broadcast with this action so a
@@ -1279,6 +1330,7 @@ public class PushNotifications extends CordovaPlugin {
 
 	public static void emitVoipEvent(@NonNull String type, @NonNull JSONObject payload) {
 		PWLog.noise(TAG, "emitVoipEvent(), event type: " + type);
+<<<<<<< HEAD
 		android.util.Log.d("VideoCallVoIP", "emitVoipEvent type=" + type);
 
 		// Deliver to any secondary WebView (e.g. an on-top video-call Activity) up front. Its own
@@ -1326,6 +1378,9 @@ public class PushNotifications extends CordovaPlugin {
 		// of dropping so the event survives until the listener attaches and the buffer is drained.
 		PWLog.info(TAG, "Buffering VoIP event '" + type + "': no callback contexts registered yet");
 		bufferVoipEvent(type, payload);
+=======
+		sVoipEventRegistry.emit(type, payload);
+>>>>>>> push/master
 	}
 
 	private static JSONObject inboxMessageToJson(InboxMessage message) {

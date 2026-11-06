@@ -40,8 +40,14 @@ function onDeviceReady() {
     sendLocalNotificationAction(pushwoosh);
     clearNotificationCenterAction(pushwoosh);
     resetBadges(pushwoosh);
+    presentInboxUIAction(pushwoosh);
+    getInboxCountsAction(pushwoosh);
     setupModalHandlers();
 }
+
+// Which async flow currently owns #statusModal, so a callback from a flow the
+// user already dismissed cannot resurrect a modal it no longer owns.
+var modalOwner = null;
 
 // Setup modal close handlers
 function setupModalHandlers() {
@@ -50,19 +56,27 @@ function setupModalHandlers() {
 
     closeBtn.onclick = function() {
         modal.classList.remove('show');
+        modalOwner = null;
     };
 
     modal.onclick = function(event) {
         if (event.target === modal) {
             modal.classList.remove('show');
+            modalOwner = null;
         }
     };
 }
 
 // Show modal with notification status
 function showStatusModal(status) {
+    if (modalOwner !== 'notificationStatus') {
+        return;
+    }
+
     var modal = document.getElementById('statusModal');
     var modalBody = document.getElementById('modalBody');
+
+    document.getElementById('modalTitle').textContent = 'Notification Status';
 
     var html = '';
 
@@ -123,10 +137,70 @@ function showStatusModal(status) {
     modal.classList.add('show');
 }
 
+// How long a toast stays and how many are kept on screen at once
+var TOAST_TIMEOUT_MS = 3000;
+var TOAST_FADE_MS = 300;
+var TOAST_MAX_VISIBLE = 3;
+
+// Non-blocking replacement for the blocking browser dialog: never stops the
+// JS thread, so push callbacks keep firing while a message is on screen.
+function showToast(message) {
+    var text = String(message);
+    console.log('[demo]', text);
+
+    var container = document.getElementById('toastContainer');
+    if (!container) {
+        return;
+    }
+
+    var toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.textContent = text;
+    container.appendChild(toast);
+
+    while (container.childElementCount > TOAST_MAX_VISIBLE) {
+        container.removeChild(container.firstElementChild);
+    }
+
+    setTimeout(function () {
+        toast.classList.add('hide');
+        setTimeout(function () {
+            if (toast.parentNode) {
+                toast.parentNode.removeChild(toast);
+            }
+        }, TOAST_FADE_MS);
+    }, TOAST_TIMEOUT_MS);
+}
+
+// Long values a person reads and copies. The demo's modal is a CSS overlay —
+// unlike a blocking browser dialog, it does not block the JS thread, so pushes still arrive.
+function showTextModal(owner, title, text) {
+    if (modalOwner !== owner) {
+        return;
+    }
+
+    var modal = document.getElementById('statusModal');
+    var modalTitle = document.getElementById('modalTitle');
+    var modalBody = document.getElementById('modalBody');
+
+    modalTitle.textContent = title;
+
+    var pre = document.createElement('pre');
+    pre.className = 'modal-text';
+    pre.textContent = String(text);
+
+    modalBody.innerHTML = '';
+    modalBody.appendChild(pre);
+
+    modal.classList.add('show');
+}
+
 // Get Remote Notification Status action
 function setupNotificationStatusAction(pushwoosh) {
     document.getElementById('getNotificationStatus').addEventListener('click', function() {
+        modalOwner = 'notificationStatus';
         var modalBody = document.getElementById('modalBody');
+        document.getElementById('modalTitle').textContent = 'Notification Status';
         modalBody.innerHTML = '<div class="loading">Loading notification status</div>';
         document.getElementById('statusModal').classList.add('show');
 
@@ -149,7 +223,7 @@ function setTagsAction(pushwoosh) {
         var value = document.getElementById("textField2").value;
 
         if (!key || !value) {
-            alert('Please enter both key and value');
+            showToast('Please enter both key and value');
             return;
         }
 
@@ -159,13 +233,13 @@ function setTagsAction(pushwoosh) {
         pushwoosh.setTags(tags,
             function() {
                 console.log('setTags success');
-                alert('Tags set successfully');
+                showToast('Tags set successfully');
                 document.getElementById("textField1").value = '';
                 document.getElementById("textField2").value = '';
             },
             function(error) {
                 console.warn('setTags failed:', error);
-                alert('Failed to set tags: ' + error);
+                showToast('Failed to set tags: ' + error);
             });
     });
 }
@@ -175,13 +249,13 @@ function setLanguageAction(pushwoosh) {
         var language = document.getElementById('textField3').value;
 
         if (!language) {
-            alert('Please enter a language code');
+            showToast('Please enter a language code');
             return;
         }
 
         pushwoosh.setLanguage(language);
         console.log('Language set to:', language);
-        alert('Language set to: ' + language);
+        showToast('Language set to: ' + language);
         document.getElementById('textField3').value = '';
     });
 }
@@ -191,13 +265,13 @@ function setUserIdAction(pushwoosh) {
         var userId = document.getElementById('textField4').value;
 
         if (!userId) {
-            alert('Please enter a user ID');
+            showToast('Please enter a user ID');
             return;
         }
 
         pushwoosh.setUserId(userId);
         console.log('User ID set to:', userId);
-        alert('User ID set to: ' + userId);
+        showToast('User ID set to: ' + userId);
         document.getElementById('textField4').value = '';
     });
 }
@@ -207,28 +281,29 @@ function sendPostEventAction(pushwoosh) {
         var eventName = document.getElementById("textField5").value;
 
         if (!eventName) {
-            alert('Please enter an event name');
+            showToast('Please enter an event name');
             return;
         }
 
         pushwoosh.postEvent(eventName, { "buttonNumber": 4, "buttonLabel": "banner" });
         console.log('Event posted:', eventName);
-        alert('Event posted: ' + eventName);
         document.getElementById("textField5").value = '';
     });
 }
 
 function getTagsAction(pushwoosh) {
     document.getElementById('getTags').addEventListener('click', function() {
+        modalOwner = 'getTags';
+
         pushwoosh.getTags(
             function(tags) {
                 console.log('tags for device:', JSON.stringify(tags));
                 var tagsStr = JSON.stringify(tags, null, 2);
-                alert('Device Tags:\n' + tagsStr);
+                showTextModal('getTags', 'Device Tags', tagsStr);
             },
             function(error) {
                 console.log('get tags error:', JSON.stringify(error));
-                alert('Failed to get tags: ' + error);
+                showToast('Failed to get tags: ' + error);
             }
         );
     }, false);
@@ -236,10 +311,12 @@ function getTagsAction(pushwoosh) {
 
 function getPushTokenAction(pushwoosh) {
     document.getElementById('getPushToken').addEventListener('click', function() {
+        modalOwner = 'pushToken';
+
         pushwoosh.getPushToken(
             function(token) {
                 console.log('push token:', token);
-                alert('Push Token:\n' + token);
+                showTextModal('pushToken', 'Push Token', token);
             }
         );
     }, false);
@@ -247,10 +324,12 @@ function getPushTokenAction(pushwoosh) {
 
 function getPushwooshHWIDAction(pushwoosh) {
     document.getElementById('getHwid').addEventListener('click', function() {
+        modalOwner = 'hwid';
+
         pushwoosh.getPushwooshHWID(
             function(hwid) {
                 console.log('Pushwoosh HWID:', hwid);
-                alert('Pushwoosh HWID:\n' + hwid);
+                showTextModal('hwid', 'Pushwoosh HWID', hwid);
             }
         );
     });
@@ -260,7 +339,7 @@ function resetBadges(pushwoosh) {
     document.getElementById('resetBadges').addEventListener('click', function() {
         pushwoosh.setApplicationIconBadgeNumber(0);
         console.log('Badges reset');
-        alert('Badges reset to 0');
+        showToast('Badges reset to 0');
     });
 }
 
@@ -272,7 +351,7 @@ function sendLocalNotificationAction(pushwoosh) {
             userData: 'optional'
         });
         console.log('Local notification scheduled for 5 seconds');
-        alert('Local notification will appear in 5 seconds');
+        showToast('Local notification will appear in 5 seconds');
     });
 }
 
@@ -280,43 +359,123 @@ function clearNotificationCenterAction(pushwoosh) {
     document.getElementById('clearNotificationCenter').addEventListener('click', function() {
         pushwoosh.cancelAllLocalNotifications();
         console.log('Notification center cleared');
-        alert('Notification center cleared');
+        showToast('Notification center cleared');
     });
 }
 
-function registerForPushNotificationAction(pushwoosh) {
-    var switcher = document.getElementById("switcher");
+// Open the Inbox UI screen
+function presentInboxUIAction(pushwoosh) {
+    document.getElementById('presentInboxUI').addEventListener('click', function() {
+        pushwoosh.presentInboxUI({ dateFormat: "dd.MM.yyyy" });
+        console.log('Inbox UI presented');
+    });
+}
 
-    switcher.addEventListener("change", function () {
-        if (this.checked) {
-            // Register for Push Notifications
+// Show total and unread inbox message counts
+function getInboxCountsAction(pushwoosh) {
+    document.getElementById('getInboxCounts').addEventListener('click', function() {
+        modalOwner = 'inboxCounts';
+
+        pushwoosh.messagesCount(function(total) {
+            pushwoosh.unreadMessagesCount(function(unread) {
+                console.log('Inbox counts - total:', total, 'unread:', unread);
+                showTextModal('inboxCounts', 'Inbox', 'Messages: ' + total + '\nUnread: ' + unread);
+            });
+        });
+    });
+}
+
+// Push subscription toggle - reference implementation. isRegisteredForPushNotifications()
+// is the source of truth: the checkbox is told the state, never asked for it.
+function registerForPushNotificationAction(pushwoosh) {
+    var switcher = document.getElementById('switcher');
+    var track = document.getElementById('switcherTrack');
+
+    // True while a registerDevice/unregisterDevice call is in flight.
+    var pending = false;
+
+    function setToggleEnabled(enabled) {
+        switcher.disabled = !enabled;
+        if (enabled) {
+            track.classList.remove('disabled');
+        } else {
+            track.classList.add('disabled');
+        }
+    }
+
+    function syncFromSdk() {
+        pushwoosh.isRegisteredForPushNotifications(
+            function (registered) {
+                // Assigning .checked from code does not fire "change", so this never re-enters
+                switcher.checked = registered;
+            },
+            function (error) {
+                console.warn('isRegisteredForPushNotifications failed:', error);
+            }
+        );
+    }
+
+    function onCallDone() {
+        pending = false;
+        setToggleEnabled(true);
+        syncFromSdk();
+    }
+
+    switcher.addEventListener('change', function () {
+        // Overlapping register/unregister calls race, so lock until the SDK answers
+        pending = true;
+        setToggleEnabled(false);
+
+        if (switcher.checked) {
             pushwoosh.registerDevice(
                 function (status) {
-                    var pushToken = status.pushToken;
-                    console.log('Push token received:', pushToken);
-                    alert('Registered! Token: ' + pushToken);
+                    console.log('Registered, push token:', status.pushToken);
+                    showToast('Registered for push notifications');
+                    onCallDone();
                 },
-                function (status) {
-                    console.error('Push registration failed:', status);
-                    alert('Registration failed: ' + status);
-                    switcher.checked = false;
+                function (error) {
+                    console.error('registerDevice failed:', error);
+                    showToast('Registration failed: ' + error);
+                    onCallDone();
                 }
             );
         } else {
-            // Unregister from Push Notifications
             pushwoosh.unregisterDevice(
-                function (status) {
-                    console.log('Unregistered successfully', status);
-                    alert('Unregistered from push notifications');
+                function () {
+                    console.log('Unregistered from push notifications');
+                    showToast('Unsubscribed from push notifications');
+                    onCallDone();
                 },
-                function (status) {
-                    console.error('Unregister failed', status);
-                    alert('Unregister failed: ' + status);
-                    switcher.checked = true;
+                function (error) {
+                    console.error('unregisterDevice failed:', error);
+                    showToast('Unregister failed: ' + error);
+                    onCallDone();
                 }
             );
         }
     });
+
+    // The subscription may have been changed elsewhere while the app was away
+    document.addEventListener('resume', function () {
+        if (!pending) {
+            syncFromSdk();
+        }
+    }, false);
+
+    syncFromSdk();
+}
+
+// HH:MM:SS.mmm — same shape as `adb logcat -v time`, so a toast on screen can
+// be lined up against the native log line.
+function eventTimestamp() {
+    function pad(value, size) {
+        return ('000' + value).slice(-size);
+    }
+
+    var now = new Date();
+
+    return pad(now.getHours(), 2) + ':' + pad(now.getMinutes(), 2) + ':' +
+        pad(now.getSeconds(), 2) + '.' + pad(now.getMilliseconds(), 3);
 }
 
 function pushwooshInitialize(pushwoosh) {
@@ -324,12 +483,19 @@ function pushwooshInitialize(pushwoosh) {
     document.addEventListener('push-notification', function (event) {
         var notification = event.notification;
         console.log('Received push notification:', JSON.stringify(notification));
-        alert('Push received: ' + (notification.message || notification.title || 'No message'));
+        showToast('push-notification at ' + eventTimestamp());
+    });
+
+    // Fired when a push is received while the app is running (both platforms)
+    document.addEventListener('push-receive', function (event) {
+        var notification = event.notification;
+        console.log('Received push (push-receive):', JSON.stringify(notification));
+        showToast('push-receive at ' + eventTimestamp());
     });
 
     // Initialize Pushwoosh
     pushwoosh.onDeviceReady({
-        appid: "A8B44-0B460"
+        appid: "XXXXX-XXXXX"
     });
 
     console.log('Pushwoosh initialized');

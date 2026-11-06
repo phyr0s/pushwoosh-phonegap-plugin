@@ -17,7 +17,7 @@ function onDeviceReady() {
 
   document.getElementById('btnInit').addEventListener('click', function () {
     log('Initializing Pushwoosh...');
-    pushwoosh.onDeviceReady({ appid: '7BCDB-76CBE' });
+    pushwoosh.onDeviceReady({ appid: 'XXXXX-XXXXX' });
     pushwoosh.getPushToken(function (token) { log('pushToken: ' + token); });
     pushwoosh.getPushwooshHWID(function (hwid) { log('HWID: ' + hwid); });
 
@@ -56,6 +56,14 @@ function onDeviceReady() {
     pushwoosh.requestCallPermission(
       function (result) { log('Call permission result: ' + JSON.stringify(result)); },
       function (err) { log('Call permission ERROR: ' + err); }
+    );
+  });
+
+  document.getElementById('btnOpenCallScreen').addEventListener('click', function () {
+    log('Opening call screen...');
+    Capacitor.nativePromise('CallScreen', 'open', {}).then(
+      function () { log('Call screen opened'); },
+      function (err) { log('Call screen ERROR: ' + JSON.stringify(err)); }
     );
   });
 

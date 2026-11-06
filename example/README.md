@@ -5,13 +5,30 @@
 ### iOS, Android
  <img src="https://github.com/Pushwoosh/pushwoosh-cordova-sample/blob/main/Screenshots/iOS.png" alt="Alt text" width="300"> <img src="https://github.com/Pushwoosh/pushwoosh-cordova-sample/blob/main/Screenshots/Android.png" alt="Alt text" width="350"> 
 
-### 1. Go to 'newdemo' folder and install the package from the command line:
+### 1. Go to the 'newdemo' folder and install the sample's dependencies:
 
 ```
-cordova plugin add pushwoosh-cordova-plugin
+cd newdemo
+npm install
 ```
 
-### 2. Navigate to the js folder within the www directory and open the file named index.js. Add your App ID
+The Pushwoosh plugin itself is **not** an npm dependency of the sample. It is installed
+automatically from the local checkout (`../..`) by the `after_platform_add` hook, so the
+sample always builds against the plugin code sitting next to it.
+
+### 2. Add a platform and build:
+
+```
+npx cordova platform add android
+npx cordova build android
+```
+
+```
+npx cordova platform add ios
+npx cordova build ios
+```
+
+### 3. Navigate to the js folder within the www directory and open the file named index.js. Add your App ID
 
 ```
 /**
@@ -23,10 +40,17 @@ cordova plugin add pushwoosh-cordova-plugin
 * "config.serviceName" - MPNS service name for wp8 platform
 */
 
-function initPushwoosh() {
+function pushwooshInitialize() {
 	 var pushwoosh = cordova.require("pushwoosh-cordova-plugin.PushNotification");
 
 //Should be called before pushwoosh.onDeviceReady
+  // push-receive: fired when a push is received while the app is running
+  document.addEventListener('push-receive', function(event) {
+      var notification = event.notification;
+      // handle received push here
+  });
+
+  // push-notification: fired when a push is opened by the user
   document.addEventListener('push-notification', function(event) {
       var notification = event.notification;
       // handle push open here
@@ -39,9 +63,9 @@ function initPushwoosh() {
 }
 ```
 
-### 3. [Android] Add the 'google-services.json' file to the app folder in Android 
+### 4. [Android] Add the 'google-services.json' file to the app folder in Android 
 
-### 4. [Android] Add the following section to your config.xml:
+### 5. [Android] Add the following section to your config.xml:
 
 ```
 <platform name="android">
@@ -51,19 +75,46 @@ function initPushwoosh() {
 
 ```
 
-### 5. [iOS] Badges
+### 6. [iOS] Notification Service Extension, App Group and badges
 
-### a. Open the Xcode project, navigate to the TARGETS tab, and add your App Group name in the App Group section for both targets (newdemo and NotificationService).
+Nothing to do by hand in Xcode for the simulator. `hooks/ios-nse.js` runs after every
+`cordova prepare ios` and `cordova build ios` and wires the extension into the generated project:
 
-<img src="https://github.com/Pushwoosh/pushwoosh-cordova-sample/blob/main/Screenshots/xcode_1.png" alt="Alt text" width="500">
+- adds the `NotificationService` target (`<app id>.NotificationService`, same deployment target as
+  the app) built from `ios-nse/NotificationService/NotificationService.swift`, a subclass of
+  `PushwooshNotificationServiceExtension`;
+- appends the `NotificationService` block with the `PushwooshXCFramework` pod to
+  `platforms/ios/Podfile` and runs `pod install` (cordova-ios rewrites the Podfile on every
+  prepare, so the hook puts the block back each time);
+- shares the App Group `group.<app id>` between the app and the extension. The group is the
+  `PW_APP_GROUP` build setting; both entitlements files and both `Info.plist` files
+  (`PW_APP_GROUPS_NAME`) reference it as `$(PW_APP_GROUP)`, and `config.xml` declares the app side.
 
-### b. Add the App Groups ID to your info.plist for each target of your application:
+The App Group is how the extension learns the application code passed to `pushwooshInitialize` in
+`www/js/index.js`: without it the extension skips the delivery event. The extension is what sends
+delivery statistics, keeps the badge in sync and downloads the image of a notification. Repeated
+builds and `cordova platform rm ios && cordova platform add ios` keep one target and one Podfile
+block.
 
-```
-<key>PW_APP_GROUPS_NAME</key>
-<string>group.com.example.demo</string>
+Running on a real device is the one case that still needs Xcode by hand: open the generated
+project and set your signing team on both the app target and the new `NotificationService`
+target, the same way you would for any extension.
 
-```
+### 7. [Android] Huawei (HMS)
+
+Huawei delivery works out of the box: `agconnect-services.json` ships with the sample and the
+`hooks/hms-android.js` hook adds the Huawei Maven repository, the `com.huawei.agconnect:agcp`
+classpath and the `com.huawei.hms:push` dependency to the generated Android project on every
+prepare. Nothing to enable in JavaScript — the native SDK picks HMS automatically on a Huawei
+device.
+
+One thing you must do yourself: register the **SHA-256 fingerprint of the signing certificate
+you build with** in AppGallery Connect (Project settings → General information → SHA-256
+certificate fingerprint). Without it, registration fails on the device with
+`6003: certificate fingerprint error`.
+
+Expected log on a Huawei device: `PUSH TRANSPORT SET/CHANGED: Huawei (device type 17)`.
+On a Google-services device you get `Android FCM (device type 3)` instead.
 
 ## The guide for SDK integration is available on the Pushwoosh [website](https://docs.pushwoosh.com/platform-docs/pushwoosh-sdk/cross-platform-frameworks/cordova/integrating-cordova-plugin)
 

@@ -220,7 +220,37 @@
  * @module pushwoosh-cordova-plugin
  */
 
-var exec = window.cordova.exec;
+/**
+ * Forwards a plugin call to `cordova.exec`, looking the bridge up on every call.
+ *
+ * The plugin is also published as a plain npm package with a `main` entry, so a bundler, an SSR
+ * pass or a test runner can evaluate this module with no cordova in scope. Reading
+ * `window.cordova.exec` while the module was being evaluated threw there and took the host's
+ * whole bootstrap down with it. With no bridge available the call is now a logged no-op that
+ * still reports the failure to the caller's fail callback, and on the cordova path the bridge is
+ * resolved exactly as before.
+ *
+ * @private
+ */
+function exec() {
+	var cordovaRef = typeof window !== 'undefined' ? window.cordova : undefined;
+
+	if (!cordovaRef || typeof cordovaRef.exec !== 'function') {
+		var message = 'Pushwoosh: cordova.exec is not available, is cordova.js loaded? Ignored call: ' + arguments[3];
+		var fail = arguments[1];
+
+		console.warn(message);
+
+		// Deferred, because cordova.exec never calls back within the caller's own frame.
+		if (typeof fail === 'function') {
+			setTimeout(function () { fail(message); }, 0);
+		}
+
+		return;
+	}
+
+	return cordovaRef.exec.apply(cordovaRef, arguments);
+}
 
 /**
  * PushNotification class provides the JavaScript API for interacting with the Pushwoosh SDK.
@@ -412,8 +442,43 @@ PushNotification.prototype.getPushwooshHWID = function(success) {
 //"pushBadge" -  badges permission granted. (iOS only)
 //"pushAlert" -  alert permission granted. (iOS only)
 //"pushSound" -  sound permission granted. (iOS only)
+//
+//Every value is returned as the string "1" or "0", not as a boolean. Note that "0"
+//is truthy in JavaScript, so compare against "1" instead of testing the value directly.
+//
+//This reports the operating system notification permission, not the Pushwoosh
+//subscription: after a successful unregisterDevice() it still reports "enabled" : "1".
+//Use isRegisteredForPushNotifications to read the subscription state.
 PushNotification.prototype.getRemoteNotificationStatus = function(callback, error) {
 	exec(callback, error, "PushNotification", "getRemoteNotificationStatus", []);
+};
+
+//Function: isRegisteredForPushNotifications
+//[android, ios] Returns whether the device is currently subscribed to push notifications.
+//
+//Parameters:
+// "success" - success callback. Receives a boolean as parameter
+// "fail" - error callback
+//
+//On iOS reports whether a push token is available, on Android reports the native registration flag.
+//
+//This is the Pushwoosh subscription state, not the operating system notification
+//permission - use getRemoteNotificationStatus for the latter. The two are independent:
+//a device can be subscribed while the user has notifications turned off in system settings.
+//
+//Example:
+//(start code)
+//	pushwoosh.isRegisteredForPushNotifications(
+//		function(registered) {
+//			console.warn('subscribed to push notifications: ' + registered);
+//		},
+//		function(error) {
+//			console.warn('isRegisteredForPushNotifications failed: ' + JSON.stringify(error));
+//		}
+//	);
+//(end)
+PushNotification.prototype.isRegisteredForPushNotifications = function(success, fail) {
+	exec(success, fail, "PushNotification", "isRegisteredForPushNotifications", []);
 };
 
 //Function: setApplicationIconBadgeNumber
@@ -714,6 +779,24 @@ PushNotification.prototype.notificationCallback = function(notification) {
  *
  * @param {Function} success - Callback function to be invoked when the event occurs.
  * @param {Function} fail - Callback function to be invoked if the registration fails.
+ *
+ * @remarks iOS: if you present the call UI in a secondary native WebView on top of the main
+ * WebView, the main WebView is backgrounded and these callbacks are suspended. The plugin also
+ * broadcasts every VoIP event via the `PushwooshVoIPEventDispatched` NSNotification so your native
+ * view controller can inject the event into that WebView. See the README section
+ * "Forwarding VoIP events to a secondary WebView (iOS)".
+ *
+ * @remarks Events that arrive before a subscription exists are buffered and replayed when
+ * you call registerEvent() for that event name, in the order they occurred. Replay happens
+ * per event name, so subscribe to every event you handle ("voipPushPayload", "answer",
+ * "hangup", ...) back to back at startup, preferably after Cordova's `deviceready` event and
+ * before the plugin's own onDeviceReady() call (the Init); subscribing to them at different
+ * times changes the order in which a buffered call's events reach you.
+ * This applies to iOS and Android alike. Known gap on Android under Capacitor: an in-page reload
+ * (location.reload(), live reload) does not reset the native plugin, so the previous page's
+ * subscriptions survive until the activity is recreated, and an event arriving between the reload
+ * and the new page's registerEvent() call may reach the stale subscription instead of being
+ * buffered - call registerEvent() as early as possible after a reload.
  */
 PushNotification.prototype.registerEvent = function(eventName, success, fail) {
 	exec(success, fail, "PushNotification", "registerEvent", [eventName]);
